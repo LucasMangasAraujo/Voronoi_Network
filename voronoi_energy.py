@@ -1,3 +1,7 @@
+import sys
+sys.path.append('../')
+import numpy as np
+from utilities
 class VoronoiEnergyFix:
     
     
@@ -16,6 +20,21 @@ class VoronoiEnergyFix:
         twoD_positions = [tuple(x[i][0], x[i][1]) for i in range(nAtoms)];
         
         return twoD_positions
+    
+    
+    
+    def compute_voronoi_energy_forces(self):
+        
+        # Get the 2D position of the crosslinks
+        positions = self.get_positions();
+        
+        
+        
+        
+        
+        return
+    
+    
     
     
     @staticmethod
