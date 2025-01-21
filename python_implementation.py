@@ -26,6 +26,7 @@ def main():
     
     # Performing first voronoi calculation, obtain delaunay triangles and compute initial areas
     coords, box_bounds = read_data_file('periodic.dat');
+    breakpoint()
     vor, delaunay, periodic_coords, periodic_indices = create_periodic_tessellations(coords, box_bounds);
     neighbours, periodic_neighbours = get_voronoi_neighbors_optimized(vor, periodic_indices);
     triangles_tuple = [tuple(sorted(triangle)) for triangle in delaunay.simplices];
