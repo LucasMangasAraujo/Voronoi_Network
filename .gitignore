@@ -1,3 +1,11 @@
 python_implementation.py\357\200\272Zone.Identifier
 *.dat
+# Old in files
+*.in
+# Lammps log file
+*.lammps
+# Minimsation snapshots
+*.xyz
+# Python junk
+__pycache__/
 

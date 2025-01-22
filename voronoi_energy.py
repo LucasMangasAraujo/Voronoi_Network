@@ -1,9 +1,10 @@
 import sys
 sys.path.append('../')
 import numpy as np
-from utilities import  create_periodic_tessellations
+from utilities import  create_periodic_tessellations, get_voronoi_neighbors_optimized, find_cell_vertices_and_triangles
 from scipy.spatial import KDTree
 from math import pow
+from ctypes import *
 
 class VoronoiEnergyFix:
     
@@ -15,22 +16,20 @@ class VoronoiEnergyFix:
         
         
     
-    
-    
     def get_positions(self):
         x = self.lmp.numpy.extract_atom("x", 3);
         nAtoms = self.lmp.get_natoms();
-        twoD_positions = [tuple(x[i][0], x[i][1]) for i in range(nAtoms)];
+        twoD_positions = [np.array([x[i][0], x[i][1]]) for i in range(nAtoms)];
         
         return twoD_positions
     
     def get_box_bounds(self):
         
         simulation_box = self.lmp.extract_box();
+        box_bounds = {};
         box_bounds['x'] = [simulation_box[0][0], simulation_box[1][0]];
         box_bounds['y'] = [simulation_box[0][1], simulation_box[1][1]];
         box_bounds['z'] = [simulation_box[0][2], simulation_box[1][2]];
-        
         
         return box_bounds
     
@@ -53,10 +52,12 @@ class VoronoiEnergyFix:
         # Get triangles and cell vertices
         triangles_tuple = [tuple(sorted(triangle)) for triangle in delaunay.simplices];
         cell_vertices, cell_triangles = find_cell_vertices_and_triangles(triangles_tuple, periodic_coords, 
-                                                                        len(coords), periodic_indices);
+                                                                        len(positions), periodic_indices);
         
         # Calculare cell areas and declare normal vector to the plane
-        cell_areas = self.polygon_area(cell_vertices);
+        breakpoint()
+        cell_areas = {idx: self.polygon_area(cell_vertices[idx]) for idx in cell_vertices.keys()};
+        breakpoint()
         K = self.bulk_modulus; ## Variable to store the bulk modulus of the cells
         Nz = np.array([0.0, 0.0, 1.0]); ## Normal to the plane
         
@@ -163,12 +164,19 @@ class VoronoiEnergyFix:
                 ## Add contribution of node j to net force at node id
                 force_at_node_i += force_contrinution_j;
             
-            forces[i] = force_at_node_i;
+            forces[i][0] = force_at_node_i[0];
+            forces[i][1] = force_at_node_i[1];
             
         return forces
     
     
-    
+    def polygon_area(self, vertices):
+        
+        ccw_vertices = self.ccw_polygon_vertices(vertices);
+        x, y = ccw_vertices[:, 0], ccw_vertices[:, 1]
+        area = 0.5 * np.abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)));
+        
+        return area
     
     @staticmethod
     def compute_jacobian(triangle, edge_lengths, baricentric_par, periodic_coords):
@@ -221,29 +229,20 @@ class VoronoiEnergyFix:
         I[0][0], I[1][1], I[2][2] = 1.0, 1.0, 1.0;
         for m in range(3):
             for p in range(3):
-                drmu_dri[m][p] = r_i[m] * dlambda1_over_Lambda_dri[p] + (lambda_1 * I[m][p] / Lambda) + 
+                drmu_dri[m][p] = r_i[m] * dlambda1_over_Lambda_dri[p] + (lambda_1 * I[m][p] / Lambda) + \
                                  r_j[m] * dlambda2_over_Lambda_dri[p] + r_k[m] * dlambda3_over_Lambda_dri[p];
         
         return drmu_dri
     
-    @staticmethod
-    def polygon_area(vertices):
-        # matrix_with_vertices = np.array(vertices);
-        # centroid = np.mean(matrix_with_vertices, axis = 0);
-        # angles = np.arctan2(vertices[:, 1] - centroid[1], vertices[:, 0] - centroid[0])
-        # ccw_vertices = vertices[np.matrix_with_vertices(angles)];
-        ccw_vertices = self.ccw_polygon_vertices(vertices);
-        x, y = ccw_vertices[:, 0], ccw_vertices[:, 1]
-        area = 0.5 * np.abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)));
-        
-        return area
-        
+    
+    
     @staticmethod
     def ccw_polygon_vertices(vertices):
+        
         matrix_with_vertices = np.array(vertices);
         centroid = np.mean(matrix_with_vertices, axis = 0);
-        angles = np.arctan2(vertices[:, 1] - centroid[1], vertices[:, 0] - centroid[0])
-        ccw_vertices = vertices[np.argsort(angles)];
+        angles = np.arctan2(matrix_with_vertices[:, 1] - centroid[1], matrix_with_vertices[:, 0] - centroid[0])
+        ccw_vertices = np.array(vertices)[np.argsort(angles)];
         
         return ccw_vertices
         
