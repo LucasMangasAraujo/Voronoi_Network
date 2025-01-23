@@ -55,11 +55,12 @@ class VoronoiEnergyFix:
                                                                         len(positions), periodic_indices);
         
         # Calculare cell areas and declare normal vector to the plane
-        breakpoint()
         cell_areas = {idx: self.polygon_area(cell_vertices[idx]) for idx in cell_vertices.keys()};
-        breakpoint()
         K = self.bulk_modulus; ## Variable to store the bulk modulus of the cells
         Nz = np.array([0.0, 0.0, 1.0]); ## Normal to the plane
+        
+        # Construct dict of kdeTrees of each node
+        nodes_kdtree = {idx: KDTree(self.ccw_polygon_vertices(cell_vertices[idx])) for idx in cell_vertices.keys()}
         
         # Loop over the cell centres atoms
         for i in range(len(positions)):
@@ -68,7 +69,8 @@ class VoronoiEnergyFix:
             
             ## Get vertices,neighbours and triagles of node i
             vertices_of_node_i = self.ccw_polygon_vertices(cell_vertices[i]);
-            node_i_tree = KDTree(vertices_of_node_i); ## Tree for efficient query
+            #node_i_tree = KDTree(vertices_of_node_i); ## Tree for efficient query
+            node_i_tree = nodes_kdtree[i]; ## Tree for efficient query
             neighbours_of_node_i = neighbours[i];
             triangles_of_node_i = cell_triangles[i];
             
@@ -79,13 +81,13 @@ class VoronoiEnergyFix:
             energies[i] = 0.5 * K * pow(A_i - A_i0, 2);
             
             ## Find correspondance between the cell vertices and their delaunay triangles
-            vertices_triangles, triangles_edge_lengths, baricentric_parameters = self.vertices_triangles_correspondance(triangles_of_node_i, vertices_of_node_i, periodic_coords)
+            vertices_triangles, triangles_edge_lengths, barycentric_parameters = self.vertices_triangles_correspondance(triangles_of_node_i, vertices_of_node_i, periodic_coords)
             
             ## Loop over the vertices of node i
             vector = np.zeros(3, );
             cross_product = np.zeros_like(vector);
             
-            for idx, mu in vertices_of_node_i:
+            for idx, mu in enumerate(vertices_of_node_i):
                 ## Get adjcent nodes and perform cross product calculation
                 mu_minus = vertices_of_node_i[idx - 1];
                 mu_plus = vertices_of_node_i[(idx + 1) % len(vertices_of_node_i)];
@@ -94,47 +96,51 @@ class VoronoiEnergyFix:
                 cross_product[0] = vector[1];
                 cross_product[1] = -vector[0];
                 
-                
                 ## Extract delaunay triangle information
                 triangle = vertices_triangles[idx];
                 edge_lengths = triangles_edge_lengths[idx];
-                baricentric_par = baricentric_parameters[idx];
+                baricentric_par = barycentric_parameters[idx];
                 
                 ## Calculare jacobian
-                drmu_dri = compute_jacobian(triangle, edge_lengths, baricentric_par, periodic_coords)
+                drmu_dri = VoronoiEnergyFix.compute_jacobian(triangle, edge_lengths, baricentric_par, periodic_coords)
                 
                 ## Calculate force contribution, and add it to the net force in node i
                 force_vector = np.zeros_like(vector);
-                for m in range(3):
-                    for p in range(3):
-                        force_vector[m] += cross_product[p] * drmu_dri[p][m];
+                # for m in range(3):
+                    # for p in range(3):
+                        # force_vector[m] += cross_product[p] * drmu_dri[p][m];
                         
-                    force_at_node_i[m] += force_vector[m];
+                    # force_at_node_i[m] += force_vector[m];
+                force_vector = cross_product.T @ drmu_dri;
+                force_at_node_i += force_vector;
                 
-                force_at_node_i *= -area_diff;
             
+            force_at_node_i *= -area_diff; ## multipli sum over the loop by the areal term
             
             ## Loop over the neighbors of node i and find out share vertices
-
             for neighbour in neighbours_of_node_i:
                 ## Extract the vertices of neighbour, and its triangles
-                vertices_of_neighbour = cell_vertices[periodic_indices[neighbour]];
+                vertices_of_neighbour = self.ccw_polygon_vertices(cell_vertices[periodic_indices[neighbour]]);
                 triangles_of_neighbour = cell_triangles[periodic_indices[neighbour]];
                 
                 ## Precompute areal factors
                 A_j = cell_areas[neighbour];
                 A_j0 = self.initial_areas[neighbour];
                 area_diff = 0.5 * K * (A_j - A_j0);
-                force_contrinution_j = np.zeros_like(force_at_node_i); ## Neighbour contribution to net force at node i
+                force_contribution_j = np.zeros_like(force_at_node_i); ## Neighbour contribution to net force at node i
                 
                 ## Find correspondance between the cell vertices and their delaunay triangles for neighbour
-                vertices_triangles, triangles_edge_lengths, baricentric_parameters = self.vertices_triangles_correspondance(triangles_of_neighbour, vertices_of_neighbour, periodic_coords)
+                vertices_triangles, triangles_edge_lengths, barycentric_parameters = self.vertices_triangles_correspondance(triangles_of_neighbour, vertices_of_neighbour, periodic_coords)
                 
                 for idx, mu in enumerate(vertices_of_neighbour):
                     ## Check if vertex is share by neighbour j and node id
-                    distance, _ = node_i_tree.query(mu);
+                    distance, _ = node_i_tree.query(mu); ## Used normal wrapped unwrapped coordinates first.
                     if distance > 1e-6: ## Vertex mu is not shared
-                        continue
+                        ## Check for periodic images as well 
+                        mu_wrapped = VoronoiEnergyFix.apply_periodic_boundary_conditions(mu, box_bounds);
+                        distance, _ = node_i_tree.query(mu_wrapped);
+                        if distance > 1e-6:
+                            continue
                         
                     ## If vertex mu is shared, procees with calculations
                     mu_minus = vertices_of_neighbour[idx - 1];
@@ -147,27 +153,31 @@ class VoronoiEnergyFix:
                     ## Extract delaunay triangle information
                     triangle = vertices_triangles[idx];
                     edge_lengths = triangles_edge_lengths[idx];
-                    baricentric_par = baricentric_parameters[idx];
-                    drmu_drj = compute_jacobian(triangle, edge_lengths, baricentric_par, periodic_coords);
+                    baricentric_par = barycentric_parameters[idx];
+                    drmu_drj = VoronoiEnergyFix.compute_jacobian(triangle, edge_lengths, baricentric_par, periodic_coords);
                     
                     ## Calculate force contribution due to neighbour, and add it to the net force in node i
                     force_vector = np.zeros_like(vector);
-                    for m in range(3):
-                        for p in range(3):
-                            force_vector[m] += cross_product[p] * drmu_drj[p][m];
+                    # for m in range(3):
+                        # for p in range(3):
+                            # force_vector[m] += cross_product[p] * drmu_drj[p][m];
                             
-                        force_contrinution_j[m] += force_vector[m];
+                        # force_contribution_j[m] += force_vector[m];
+                    force_vector = cross_product.T @ drmu_drj;
+                    force_contribution_j += force_vector;
                     
-                    force_contrinution_j *= -area_diff;
-                    
+                force_contribution_j *= -area_diff;
+                
                 
                 ## Add contribution of node j to net force at node id
-                force_at_node_i += force_contrinution_j;
+                force_at_node_i += force_contribution_j;
+            
             
             forces[i][0] = force_at_node_i[0];
             forces[i][1] = force_at_node_i[1];
             
-        return forces
+        
+        return forces, energies
     
     
     def polygon_area(self, vertices):
@@ -251,27 +261,42 @@ class VoronoiEnergyFix:
     def ccw_polygon_indices(vertices):
         matrix_with_vertices = np.array(vertices);
         centroid = np.mean(matrix_with_vertices, axis = 0);
-        angles = np.arctan2(vertices[:, 1] - centroid[1], vertices[:, 0] - centroid[0])
+        angles = np.arctan2(matrix_with_vertices[:, 1] - centroid[1], matrix_with_vertices[:, 0] - centroid[0])
         ccw_indices = np.argsort(angles);
         
         return ccw_indices
     
     @staticmethod
+    def apply_periodic_boundary_conditions(point_unwrapped, box_bounds):
+        x_min, x_max = box_bounds['x']
+        y_min, y_max = box_bounds['y']
+        
+        x_width = x_max - x_min
+        y_width = y_max - y_min
+        
+        point_wrapped = np.zeros_like(point_unwrapped);
+        point_wrapped[0] = (point_unwrapped[0] - x_min) % x_width + x_min
+        point_wrapped[1] = (point_unwrapped[1] - y_min) % y_width + y_min
+        
+        return point_wrapped
+    
+    @staticmethod
     def vertices_triangles_correspondance(triangles_of_node_i, vertices_of_node_i, periodic_coords):
         # Initialise some outputs
         triangles_edge_lengths = {}; ## Initialisation of the lengths of each triangle
-        baricentric_parameters = {}; ## Intialisation of the parameters to compute baricentric centre.
+        barycentric_parameters = {}; ## Intialisation of the parameters to compute baricentric centre.
         vertices_triangles = {}; ## Triangle-vertices association
         
         # Loop over the triangles and reoder its nodes in counterclock_wise fashion
         ccw_triangles = [];
         for triangle in triangles_of_node_i:
             triangle_coords = [periodic_coords[idx] for idx in triangle];
-            ccw_indices = self.ccw_polygon_indices(triangle_coords);
+            ccw_indices = VoronoiEnergyFix.ccw_polygon_indices(triangle_coords);
             i, j, k = triangle[ccw_indices[0]], triangle[ccw_indices[1]], triangle[ccw_indices[2]];
             ccw_triangles.append((i, j, k));
             
-        # Obtain the baricentres and store them in a KDTree
+            
+        # Obtain the barycentres and store them in a KDTree
         triangle_barycentres = [];
         for triangle in ccw_triangles:
             ## Get coordinates of triangle nodes
@@ -291,21 +316,22 @@ class VoronoiEnergyFix:
             lambda_3 = l_k2 * (l_i2 + l_j2 - l_k2);
             Lambda = lambda_1 + lambda_2 + lambda_3;
             
-            ## Obtain baricentre and store
-            baricentre = (lambda_1 * r_i + lambda_2 * r_j + lambda_3 * r_k) / Lambda
-            triangle_barycentres.append(baricentre);
+            ## Obtain barycentre and store
+            barycentre = (lambda_1 * r_i + lambda_2 * r_j + lambda_3 * r_k) / Lambda
+            triangle_barycentres.append(barycentre);
         
-        kdtree = KDTree(triangle_barycentres); ## KDTree with baricentres
+        kdtree = KDTree(triangle_barycentres); ## KDTree with barycentres
         
         # Assign now triangles to their correspondinc vertices
         assigned_ids = set();
         for idx, vertex in enumerate(vertices_of_node_i):
             ## Check whether triangle has already been assigned to a vertex
-            _, candidate_triangle_id = kdtree.query(vertex);
-            if candidate_triangle_id in assigned_ids: 
+            _, nearest_triangle_id = kdtree.query(vertex);
+            if nearest_triangle_id in assigned_ids: 
                 continue
             
             ## Assemble coordinates
+            triangle = ccw_triangles[nearest_triangle_id];
             r_i = periodic_coords[triangle[0]];
             r_j = periodic_coords[triangle[1]];
             r_k = periodic_coords[triangle[2]];
@@ -321,15 +347,15 @@ class VoronoiEnergyFix:
             lambda_3 = l_k2 * (l_i2 + l_j2 - l_k2);
             Lambda = lambda_1 + lambda_2 + lambda_3;
             
-            ## Assemble baricentre
-            baricentre = (lambda_1 * r_i / Lambda) + (lambda_2 * r_j / Lambda) + (lambda_3 * r_k / Lambda)
+            ## Assemble barycentre
+            barycentre = (lambda_1 * r_i / Lambda) + (lambda_2 * r_j / Lambda) + (lambda_3 * r_k / Lambda)
             
-            ## Check if baricentre and vertex are identical
-            if np.linalg.norm(baricentre - vertex) < 1e-6:
+            ## Check if barycentre and vertex are identical
+            if np.linalg.norm(barycentre - vertex) < 1e-6:
                 vertices_triangles[idx] = triangle;
                 triangles_edge_lengths[idx] = l_i2, l_j2, l_k2;
-                baricentric_parameters[idx] = lambda_1, lambda_2, lambda_3, Lambda;
-                assigned_ids.add(candidate_triangle_id);
+                barycentric_parameters[idx] = lambda_1, lambda_2, lambda_3, Lambda;
+                assigned_ids.add(nearest_triangle_id);
                 
         
-        return vertices_triangles, triangles_edge_lengths, baricentric_parameters;
+        return vertices_triangles, triangles_edge_lengths, barycentric_parameters;
